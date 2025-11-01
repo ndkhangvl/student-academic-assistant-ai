@@ -1,29 +1,13 @@
-# requirements.txt - Phiên bản đồng bộ và cập nhật
-
-# Web API
-# Giữ nguyên bản mới nhất của Pydantic 2.x (0.115.0 yêu cầu Pydantic 2)
-# Tôi đã sửa Pydantic từ 1.x (1.10.13) lên 2.x (2.9.2) để phù hợp với FastAPI 0.115.0
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-multipart==0.0.9
-python-dotenv==1.0.1
-pydantic==2.9.2  # Nâng cấp lên Pydantic 2.x
-
-# LangChain stack (ĐỒNG BỘ PHIÊN BẢN 0.2.x MỚI NHẤT)
-# Đây là các gói đã được tách rời theo kiến trúc mới nhất của LangChain
-langchain==0.2.11              # Gói điều phối chính
-langchain-core==0.2.20         # Core logic (Yêu cầu bởi các gói khác)
-langchain-community==0.2.11    # Chứa PyPDFLoader, FAISS (QUAN TRỌNG: Cần nâng cấp)
-langchain-text-splitters==0.2.1 # Chứa RecursiveCharacterTextSplitter
-langsmith==0.1.84              # (Nếu bạn dùng LangSmith)
-
-# Các gói kết nối cụ thể (NÊN TÁCH RIÊNG)
-langchain-ollama==0.2.1        # ChatOllama (QUAN TRỌNG: Nâng cấp để tương thích 0.2.x)
-langchain-huggingface==0.1.2   # (Nếu bạn cần)
-
-# Embeddings + Vector store
-sentence-transformers==2.7.0   # Nâng cấp nhẹ
-faiss-cpu==1.8.0.post1
-
-# PDF
-pypdf==4.2.0                   # Nâng cấp nhẹ để ổn định
+fastapi
+uvicorn[standard]
+langchain
+langchain-community
+langchain-core
+langchain-text-splitters
+faiss-cpu
+sentence-transformers
+cachetools
+pypdf
+python-docx
+unstructured
+numpy
