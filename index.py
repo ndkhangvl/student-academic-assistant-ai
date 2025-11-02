@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -24,6 +25,13 @@ from hashlib import blake2s
 import google.generativeai as genai
 
 app = FastAPI(title="RAG + Gemini (Accuracy‑Maximized)", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # hoặc ["http://localhost:3000"] nếu frontend chạy ở đó
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 load_dotenv()
 # --------- Paths & Persist ----------
 UPLOAD_DIR = Path("./uploads")
