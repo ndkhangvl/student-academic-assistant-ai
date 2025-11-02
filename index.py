@@ -24,6 +24,7 @@ from hashlib import blake2s
 
 import google.generativeai as genai
 
+app = FastAPI(title="RAG + Gemini (Accuracy‑Maximized)", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # hoặc ["http://localhost:3000"] nếu frontend chạy ở đó
@@ -31,7 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app = FastAPI(title="RAG + Gemini (Accuracy‑Maximized)", version="1.0.0")
 load_dotenv()
 # --------- Paths & Persist ----------
 UPLOAD_DIR = Path("./uploads")
