@@ -137,7 +137,14 @@ def _call_gemini(context: str, question: str) -> str:
     """
     
     # Gọi model trực tiếp (KHÔNG dùng gemini_client)
-    model = genai.GenerativeModel("gemini-2.5-flash")  # hoặc gemini-1.5-pro, gemini-2.5-flash tùy bạn
+    model = genai.GenerativeModel(
+        "gemini-2.5-flash",
+        generation_config={
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "max_output_tokens": 1024
+        }
+    )  # hoặc gemini-1.5-pro, gemini-2.5-flash tùy bạn
 
     response = model.generate_content(prompt)
     return response.text
@@ -251,8 +258,20 @@ class AskRequest(BaseModel):
 async def ask(req: AskRequest):
     if req.k < 1 or req.k > 12:
         raise HTTPException(status_code=400, detail="k phải trong [1..12]")
+    start_time = time.time()  # Bắt đầu đo
     answer = await rag_answer(req.question, k=req.k)
-    return JSONResponse(content={"answer": answer})
+    elapsed = time.time() - start_time  # Tổng thời gian thực thi
+     # Chuyển giây -> giờ:phút:giây
+    hours = int(elapsed // 3600)
+    minutes = int((elapsed % 3600) // 60)
+    seconds = int(elapsed % 60)
+    formatted_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    return JSONResponse(content={
+        "answer": answer,
+        "elapsed_seconds": round(elapsed, 3),
+        "elapsed_hms": formatted_time  # thêm dạng giờ:phút:giây
+    })
 
 @app.post("/ingest")
 async def ingest(files: List[UploadFile] = File(...)):
