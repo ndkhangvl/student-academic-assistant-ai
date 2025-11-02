@@ -1,13 +1,12 @@
 fastapi
 uvicorn[standard]
-langchain
-langchain-community
-langchain-core
-langchain-text-splitters
+langchain==0.1.17
+langchain-community==0.0.35
+langchain-text-splitters==0.0.1
 faiss-cpu
 sentence-transformers
 cachetools
+numpy
 pypdf
 python-docx
 unstructured
-numpy
