@@ -10,3 +10,4 @@ numpy
 pypdf
 python-docx
 unstructured
+python-multipart
