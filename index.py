@@ -27,7 +27,7 @@ import google.generativeai as genai
 app = FastAPI(title="RAG + Gemini (Accuracy‑Maximized)", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # hoặc ["http://localhost:3000"] nếu frontend chạy ở đó
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,19 +41,21 @@ INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 # --------- Embeddings & LLM ----------
 embeddings: Optional[HuggingFaceEmbeddings] = None
-# llm client – Gemini
 gemini_client = None
-GEMINI_MODEL = "gemini-2.5-flash"  # hoặc model bạn chọn
+GEMINI_MODEL = "gemini-2.5-flash"
 
-# --------- Prompt cực nghiêm ngặt -----------
-SYSTEM_PROMPT = """**BẠN BẮT BUỘC PHẢI TRẢ LỜI BẰNG TIẾNG VIỆT HOÀN TOÀN.**
+# --------- Prompt -----------
+SYSTEM_PROMPT = """
+Bạn là trợ lý học vụ, chuyên cung cấp thông tin chính xác tuyệt đối từ các văn bản quy phạm.
+BẮT BUỘC PHẢI TRẢ LỜI HOÀN TOÀN BẰNG TIẾNG VIỆT.
 
-Bạn là trợ lý khoa học chính xác tuyệt đối, chỉ được trả lời dựa trên NGỮ CẢNH dưới đây.
-Rất quan trọng: MỌI LUẬN ĐIỂM, SỐ LIỆU, KẾT LUẬN phải có đối chiếu NGUỒN cụ thể từng ý, theo định dạng [file:pX].
-Không bao giờ bịa đặt/tưởng tượng/chuyển diễn giải nếu thiếu nguồn. Nếu thông tin NGỮ CẢNH không đủ, chỉ trả lời: "không đủ dữ liệu".
-Không sử dụng bất kỳ kiến thức ngoài nào – CHỈ trả lời dựa vào thông tin trong 'Ngữ cảnh' bên dưới.
-**LƯU Ý QUAN TRỌNG: MỌI CÂU TRẢ LỜI PHẢI ĐƯỢC DIỄN ĐẠT HOÀN TOÀN BẰNG TIẾNG VIỆT.**
-Cuối câu trả lời, liệt kê danh sách 'Nguồn:' gồm các [file:pX] đã sử dụng.
+QUY TẮC BẮT BUỘC:
+1. NGUỒN DUY NHẤT: CHỈ được trả lời dựa trên nội dung trong phần 'Ngữ cảnh' dưới đây. Không sử dụng bất kỳ kiến thức ngoài nào.
+2. TRÍCH DẪN BẮT BUỘC: MỌI luận điểm, số liệu, và kết luận quan trọng phải được trích dẫn nguồn ngay sau đó. Sử dụng ĐỊNH DẠNG BẮT BUỘC: [file:ĐiềuX]. (KHÔNG sử dụng số trang pX).
+3. TỪ CHỐI: Nếu thông tin trong 'Ngữ cảnh' không đủ để trả lời chính xác hoặc không thể gán tag [file:ĐiềuX] rõ ràng, bạn PHẢI trả lời duy nhất: "Không đủ dữ liệu."
+4. TÍNH TOÀN VẸN: Không bịa đặt, suy diễn, hoặc chuyển diễn giải.
+
+Sau khi trả lời, liệt kê danh sách các nguồn đã sử dụng dưới tiêu đề 'Nguồn:'.
 
 Ngữ cảnh:
 {context}
@@ -81,7 +83,7 @@ def load_vectorstore() -> Optional[FAISS]:
 def persist_vectorstore(vs: FAISS) -> None:
     vs.save_local(str(INDEX_DIR))
 
-# --------- Accuracy helpers (giữ nguyên) ----------
+# --------- Accuracy helpers ----------
 def norm_text(s: str) -> str:
     return " ".join(s.strip().split()).lower()
 
@@ -93,19 +95,35 @@ def hash_ctx(question: str, context: str, model: str, k: int) -> str:
     h.update(f"|{model}|{k}".encode("utf-8"))
     return h.hexdigest()
 
-def _format_docs(docs: List[Document], per_chunk_limit=2000, k_limit=8) -> str:
-    out = []
-    n_chunks = min(len(docs), k_limit)
-    for d in docs[:n_chunks]:
-        meta = d.metadata or {}
-        src = Path(meta.get("source", "unknown")).name
-        page = meta.get("page", None)
-        tag = f"{src}" + (f":p{page+1}" if page is not None else "")
-        text = d.page_content.strip().replace("\n", " ")
+from pathlib import Path
+from typing import List, Optional, Tuple
+# Giả định Document đã được import từ langchain.docstore.document
+
+def _format_docs(docs: List[Document], per_chunk_limit: int = 2000, k_limit: int = 8) -> str:
+    formatted_chunks = []
+    
+    for doc in docs[:k_limit]:
+        meta = doc.metadata or {}
+        
+        src_name = Path(meta.get("source", "unknown")).name
+        
+        dieu_so = meta.get('dieu_so')
+        
+        if dieu_so is not None:
+            source_tag = f":Điều{dieu_so}"
+        else:
+            source_tag = ":Không xác định" 
+            
+        tag = f"{src_name}{source_tag}"
+        
+        text = " ".join(doc.page_content.strip().split()) 
+        
         if len(text) > per_chunk_limit:
             text = text[:per_chunk_limit] + "..."
-        out.append(f"[{tag}] {text}")
-    return "\n\n---\n\n".join(out)
+            
+        formatted_chunks.append(f"[{tag}] {text}")
+
+    return "\n\n---\n\n".join(formatted_chunks)
 
 def _make_retriever(k: int = 8):
     if vectorstore is None:
@@ -113,7 +131,6 @@ def _make_retriever(k: int = 8):
     return vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": k})
 
 def _build_rag_chain(k: int = 8):
-    # NOTE: ở đây chúng sẽ không dùng LangChain “llm” obj nữa, chúng sẽ gọi trực tiếp Gemini API
     retriever = _make_retriever(k)
     return (
         {
@@ -121,8 +138,6 @@ def _build_rag_chain(k: int = 8):
             "question": RunnablePassthrough()
         }
         | prompt
-        # | llm  <-- loại bỏ
-        # | StrOutputParser()  <-- giữ để parse string
         | RunnableLambda(lambda inputs: _call_gemini(inputs["context"], inputs["question"]))
         | StrOutputParser()
     )
@@ -136,17 +151,25 @@ def _call_gemini(context: str, question: str) -> str:
     Câu hỏi: {question}
     """
     
-    # Gọi model trực tiếp (KHÔNG dùng gemini_client)
     model = genai.GenerativeModel(
         "gemini-2.5-flash",
         generation_config={
             "temperature": 0.2,
             "top_p": 0.9,
-            "max_output_tokens": 1024
+            "max_output_tokens": 4096
         }
-    )  # hoặc gemini-1.5-pro, gemini-2.5-flash tùy bạn
+    ) 
 
     response = model.generate_content(prompt)
+    # if not response.text:
+    #     if response.prompt_feedback.block_reason != 0: 
+    #         print(f"LỖI PHẢN HỒI BỊ CHẶN: Lý do chặn: {response.prompt_feedback.block_reason.name}")
+    #         return "Lỗi: Yêu cầu bị hệ thống an toàn chặn. Vui lòng kiểm tra lại câu hỏi hoặc ngữ cảnh."
+        
+
+    # if response.candidates and response.candidates[0].finish_reason != 0:
+    #     return f"Lỗi: Mô hình không thể hoàn thành phản hồi. Finish Reason: {response.candidates[0].finish_reason.name}"
+
     return response.text
 
 # --------- Caching ---------
@@ -186,7 +209,7 @@ async def rag_answer(question: str, k: int = 8) -> str:
     ANSWER_CACHE[ck] = answer
     return answer
 
-# --------- Ingest pipeline (giữ nguyên) ----------
+# --------- Ingest pipeline ----------
 def _load_single_file_to_docs(path: Path) -> List[Document]:
     docs = []
     if path.suffix.lower() == ".pdf":
@@ -219,7 +242,7 @@ def _index_documents(docs: List[Document]) -> None:
         vectorstore.add_documents(chunks)
     persist_vectorstore(vectorstore)
 
-# --------- FastAPI endpoints (giữ nguyên) ----------
+# --------- FastAPI endpoints ----------
 @app.on_event("startup")
 def _startup():
     global embeddings, vectorstore
@@ -227,7 +250,6 @@ def _startup():
     if embeddings is None:
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L12-v2")
 
-    # Cấu hình API key (KHÔNG có .Client())
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("Chưa thiết lập API key. Hãy export GOOGLE_API_KEY trước khi chạy.")
@@ -258,10 +280,9 @@ class AskRequest(BaseModel):
 async def ask(req: AskRequest):
     if req.k < 1 or req.k > 12:
         raise HTTPException(status_code=400, detail="k phải trong [1..12]")
-    start_time = time.time()  # Bắt đầu đo
+    start_time = time.time() 
     answer = await rag_answer(req.question, k=req.k)
-    elapsed = time.time() - start_time  # Tổng thời gian thực thi
-     # Chuyển giây -> giờ:phút:giây
+    elapsed = time.time() - start_time 
     hours = int(elapsed // 3600)
     minutes = int((elapsed % 3600) // 60)
     seconds = int(elapsed % 60)
@@ -270,7 +291,7 @@ async def ask(req: AskRequest):
     return JSONResponse(content={
         "answer": answer,
         "elapsed_seconds": round(elapsed, 3),
-        "elapsed_hms": formatted_time  # thêm dạng giờ:phút:giây
+        "elapsed_hms": formatted_time 
     })
 
 @app.post("/ingest")
