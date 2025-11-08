@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain.prompts import ChatPromptTemplate
@@ -21,7 +22,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from cachetools import LRUCache, TTLCache
 from hashlib import blake2s
-
+import re
 import google.generativeai as genai
 
 app = FastAPI(title="RAG + Gemini (Accuracy‑Maximized)", version="1.0.0")
@@ -46,16 +47,16 @@ GEMINI_MODEL = "gemini-2.5-flash"
 
 # --------- Prompt -----------
 SYSTEM_PROMPT = """
-Bạn là trợ lý học vụ, chuyên cung cấp thông tin chính xác tuyệt đối từ các văn bản quy phạm.
-BẮT BUỘC PHẢI TRẢ LỜI HOÀN TOÀN BẰNG TIẾNG VIỆT.
+Bạn là trợ lý học vụ. Chỉ trả lời bằng tiếng Việt.
 
-QUY TẮC BẮT BUỘC:
-1. NGUỒN DUY NHẤT: CHỈ được trả lời dựa trên nội dung trong phần 'Ngữ cảnh' dưới đây. Không sử dụng bất kỳ kiến thức ngoài nào.
-2. TRÍCH DẪN BẮT BUỘC: MỌI luận điểm, số liệu, và kết luận quan trọng phải được trích dẫn nguồn ngay sau đó. Sử dụng ĐỊNH DẠNG BẮT BUỘC: [file:ĐiềuX]. (KHÔNG sử dụng số trang pX).
-3. TỪ CHỐI: Nếu thông tin trong 'Ngữ cảnh' không đủ để trả lời chính xác hoặc không thể gán tag [file:ĐiềuX] rõ ràng, bạn PHẢI trả lời duy nhất: "Không đủ dữ liệu."
-4. TÍNH TOÀN VẸN: Không bịa đặt, suy diễn, hoặc chuyển diễn giải.
+QUY TẮC:
+1. Chỉ dùng thông tin trong “Ngữ cảnh”. Không dùng kiến thức ngoài.
+2. Mọi số liệu hoặc kết luận phải kèm trích dẫn dạng [file:ĐiềuX].
+3. Nếu thiếu dữ liệu hoặc không gán được nguồn, trả: "Không đủ dữ liệu."
+4. Không suy diễn, không thêm nội dung.
+5. Câu trả lời phải NGẮN GỌN: tối đa 3 đến 5 câu, chỉ nêu ý chính liên quan trực tiếp câu hỏi. Không liệt kê dài, không giải thích thừa.
 
-Sau khi trả lời, liệt kê danh sách các nguồn đã sử dụng dưới tiêu đề 'Nguồn:'.
+Cuối trả lời ghi mục "Nguồn:" liệt kê các thẻ đã dùng.
 
 Ngữ cảnh:
 {context}
@@ -212,26 +213,64 @@ async def rag_answer(question: str, k: int = 8) -> str:
 # --------- Ingest pipeline ----------
 def _load_single_file_to_docs(path: Path) -> List[Document]:
     docs = []
-    if path.suffix.lower() == ".pdf":
-        docs += PyPDFLoader(str(path)).load()
-    elif path.suffix.lower() == ".docx":
-        docs += Docx2txtLoader(str(path)).load()
+    if path.suffix.lower() == ".docx":
+        docs = Docx2txtLoader(str(path)).load()
+
+    elif path.suffix.lower() == ".pdf":
+        docs = PyPDFLoader(str(path)).load()
+
     elif path.suffix.lower() in [".txt", ".md"]:
-        docs += TextLoader(str(path), encoding="utf-8").load()
+        docs = TextLoader(str(path), encoding="utf-8").load()
+
     else:
         raise ValueError(f"Định dạng không hỗ trợ: {path.suffix}")
+
     for d in docs:
         d.metadata = d.metadata or {}
         d.metadata["source"] = str(path.resolve())
+
     return docs
 
+def split_by_dieu(docs: List[Document]) -> List[Document]:
+    new_docs = []
+    
+    pattern = r"(Điều\s*\d+\.?)"
+
+    for doc in docs:
+        content = doc.page_content.strip()
+
+        content = re.sub(r"\s+", " ", content)
+
+        parts = re.split(pattern, content)
+
+        for i in range(1, len(parts), 2):
+            dieu_title = parts[i].strip()
+
+            nums = re.findall(r"\d+", dieu_title)
+            if not nums:
+                continue
+
+            dieu_number = int(nums[0])
+
+            dieu_body = parts[i + 1].strip()
+
+            if len(dieu_body) < 10:
+                continue
+
+            new_docs.append(Document(
+                page_content=f"{dieu_title}\n{dieu_body}",
+                metadata={
+                    "source": doc.metadata.get("source", "unknown"),
+                    "dieu_so": dieu_number
+                }
+            ))
+
+    return new_docs
+
+
 def _split_docs(docs: List[Document]) -> List[Document]:
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000,
-        chunk_overlap=256,
-        add_start_index=True
-    )
-    return splitter.split_documents(docs)
+    return split_by_dieu(docs)
+
 
 def _index_documents(docs: List[Document]) -> None:
     global vectorstore

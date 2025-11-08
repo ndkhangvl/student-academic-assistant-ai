@@ -11,3 +11,4 @@ pypdf
 python-docx
 unstructured
 python-multipart
+google-generativeai
