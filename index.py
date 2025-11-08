@@ -285,9 +285,10 @@ def _startup():
     print_ram("Before loading embeddings")
 
     if embeddings is None:
-        embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/paraphrase-MiniLM-L3-v2"
+       embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/gemini-embedding-001"
         )
+
 
     print_ram("After loading embeddings")
 
