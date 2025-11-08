@@ -2,6 +2,7 @@ import os
 import shutil
 import asyncio
 import time
+import psutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -19,6 +20,7 @@ from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
 from langchain.docstore.document import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 from cachetools import LRUCache, TTLCache
 from hashlib import blake2s
@@ -254,17 +256,6 @@ def split_by_dieu(docs: List[Document]) -> List[Document]:
                     "dieu_so": dieu_number
                 }
             ))
-    try:
-        with open("split_output.txt", "w", encoding="utf-8") as f:
-            for d in new_docs:
-                src = Path(d.metadata.get("source", "unknown")).name
-                so_dieu = d.metadata.get("dieu_so", "N/A")
-                f.write(f"--- Điều {so_dieu} | Source: {src} ---\n")
-                f.write(d.page_content)
-                f.write("\n\n")
-        print("✅ File split_output.txt đã được tạo để kiểm tra.")
-    except Exception as e:
-        print("❌ Lỗi khi ghi file split_output.txt:", e)
 
     return new_docs
 
@@ -282,35 +273,41 @@ def _index_documents(docs: List[Document]) -> None:
         vectorstore.add_documents(chunks)
     persist_vectorstore(vectorstore)
 
+def print_ram(label=""):
+    process = psutil.Process(os.getpid())
+    mem_mb = process.memory_info().rss / (1024 * 1024)
+    print(f"[RAM] {label}: {mem_mb:.2f} MB")
 # --------- FastAPI endpoints ----------
 @app.on_event("startup")
 def _startup():
     global embeddings, vectorstore
 
+    print_ram("Before loading embeddings")
+
     if embeddings is None:
-        # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L12-v2")
-        embeddings = HuggingFaceEmbeddings(model_name="bkai-foundation-models/vietnamese-bi-encoder")
-    # vs = load_vectorstore()
-    # if vs:
-    #     print("FAISS index loaded."); 
-    #     vectorstore = vs
-    #     embeddings = None
-    # else:
-    #     print("No FAISS index yet. Upload at /ingest")
-    #     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L12-v2")
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/paraphrase-MiniLM-L3-v2"
+        )
 
+    print_ram("After loading embeddings")
 
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        raise RuntimeError("Chưa thiết lập API key. Hãy export GOOGLE_API_KEY trước khi chạy.")
+        raise RuntimeError("Chưa thiết lập GOOGLE_API_KEY")
 
     genai.configure(api_key=api_key)
 
+    print_ram("Before loading FAISS")
+
     vs = load_vectorstore()
     if vs:
-        print("FAISS index loaded."); vectorstore = vs
+        vectorstore = vs
+        print("FAISS index loaded.")
     else:
         print("No FAISS index yet. Upload at /ingest")
+
+    print_ram("After loading FAISS")
+
 
 @app.get("/health")
 def health():
