@@ -24,6 +24,8 @@ from cachetools import LRUCache, TTLCache
 from hashlib import blake2s
 import re
 import google.generativeai as genai
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 app = FastAPI(title="RAG + Gemini (Accuracy‑Maximized)", version="1.0.0")
 app.add_middleware(
@@ -95,10 +97,6 @@ def hash_ctx(question: str, context: str, model: str, k: int) -> str:
     h.update(context.encode("utf-8"))
     h.update(f"|{model}|{k}".encode("utf-8"))
     return h.hexdigest()
-
-from pathlib import Path
-from typing import List, Optional, Tuple
-# Giả định Document đã được import từ langchain.docstore.document
 
 def _format_docs(docs: List[Document], per_chunk_limit: int = 2000, k_limit: int = 8) -> str:
     formatted_chunks = []
@@ -174,12 +172,10 @@ def _call_gemini(context: str, question: str) -> str:
     return response.text
 
 # --------- Caching ---------
-ANSWER_CACHE = TTLCache(maxsize=512, ttl=1800)
-CONTEXT_CACHE = LRUCache(maxsize=1024)
+CONTEXT_CACHE = LRUCache(maxsize=50)
+ANSWER_CACHE = TTLCache(maxsize=50, ttl=600)
 
 async def rag_answer(question: str, k: int = 8) -> str:
-    start_time_retrieval_context = time.time()
-
     qn = norm_text(question)
     ctx_text = CONTEXT_CACHE.get((qn, k))
 
@@ -195,17 +191,10 @@ async def rag_answer(question: str, k: int = 8) -> str:
     else:
         print("[TIME] Context found in cache.")
 
-    context_prep_duration = time.time() - start_time_retrieval_context
-    print(f"[TIME] Context prep total: {context_prep_duration:.4f} s")
-
-    # check cache for answer
     ck = hash_ctx(qn, ctx_text, model=GEMINI_MODEL, k=k)
     if ck in ANSWER_CACHE:
-        print("[TIME] Answer from cache.")
         return ANSWER_CACHE[ck]
 
-    # LLM call
-    print("[TIME] Calling Gemini API...")
     answer = await asyncio.to_thread(_call_gemini, ctx_text, question)
     ANSWER_CACHE[ck] = answer
     return answer
@@ -239,7 +228,7 @@ def split_by_dieu(docs: List[Document]) -> List[Document]:
     for doc in docs:
         content = doc.page_content.strip()
 
-        content = re.sub(r"\s+", " ", content)
+        ontent = re.sub(r"[ \t]+", " ", content)
 
         parts = re.split(pattern, content)
 
@@ -254,8 +243,9 @@ def split_by_dieu(docs: List[Document]) -> List[Document]:
 
             dieu_body = parts[i + 1].strip()
 
-            if len(dieu_body) < 10:
+            if len(dieu_body) < 30:
                 continue
+
 
             new_docs.append(Document(
                 page_content=f"{dieu_title}\n{dieu_body}",
@@ -264,6 +254,17 @@ def split_by_dieu(docs: List[Document]) -> List[Document]:
                     "dieu_so": dieu_number
                 }
             ))
+    try:
+        with open("split_output.txt", "w", encoding="utf-8") as f:
+            for d in new_docs:
+                src = Path(d.metadata.get("source", "unknown")).name
+                so_dieu = d.metadata.get("dieu_so", "N/A")
+                f.write(f"--- Điều {so_dieu} | Source: {src} ---\n")
+                f.write(d.page_content)
+                f.write("\n\n")
+        print("✅ File split_output.txt đã được tạo để kiểm tra.")
+    except Exception as e:
+        print("❌ Lỗi khi ghi file split_output.txt:", e)
 
     return new_docs
 
@@ -287,7 +288,17 @@ def _startup():
     global embeddings, vectorstore
 
     if embeddings is None:
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L12-v2")
+        # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L12-v2")
+        embeddings = HuggingFaceEmbeddings(model_name="bkai-foundation-models/vietnamese-bi-encoder")
+    # vs = load_vectorstore()
+    # if vs:
+    #     print("FAISS index loaded."); 
+    #     vectorstore = vs
+    #     embeddings = None
+    # else:
+    #     print("No FAISS index yet. Upload at /ingest")
+    #     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L12-v2")
+
 
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
@@ -373,3 +384,54 @@ def reset_index():
     CONTEXT_CACHE.clear()
     ANSWER_CACHE.clear()
     return {"message": "Index removed. Re-ingest to rebuild."}
+
+@app.get("/debug/faiss")
+def debug_faiss(dump: bool = False):
+    global vectorstore
+
+    if not INDEX_DIR.exists() or not any(INDEX_DIR.iterdir()):
+        return JSONResponse(
+            {"error": "FAISS index not found or empty"},
+            status_code=404
+        )
+
+    if vectorstore is None:
+        vs = load_vectorstore()
+        if not vs:
+            return JSONResponse({"error": "Không thể load FAISS index"}, status_code=500)
+        vectorstore = vs
+
+    all_docs = list(vectorstore.docstore._dict.values())
+
+    total_docs = len(all_docs)
+    dieu_list = sorted([
+        d.metadata.get("dieu_so")
+        for d in all_docs
+        if "dieu_so" in d.metadata
+    ])
+
+    preview = [
+        {
+            "dieu": d.metadata.get("dieu_so"),
+            "text": d.page_content[:180].replace("\n", " ")
+        }
+        for d in all_docs
+    ]
+
+    result = {
+        "total_docs": total_docs,
+        "danh_sach_dieu": dieu_list,
+        "preview": preview,
+    }
+
+    if dump:
+        dump_path = INDEX_DIR / "debug_dump.txt"
+        with dump_path.open("w", encoding="utf-8") as f:
+            for d in all_docs:
+                so = d.metadata.get("dieu_so", "N/A")
+                f.write(f"=== Điều {so} ===\n")
+                f.write(d.page_content)
+                f.write("\n\n")
+        result["dump_file"] = str(dump_path)
+
+    return JSONResponse(result)
