@@ -44,6 +44,11 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 INDEX_DIR = Path("./faiss_index")
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
+
+# Config History
+CHAT_HISTORY = []
+MAX_HISTORY = 6 
+
 # --------- Embeddings & LLM ----------
 embeddings: Optional[HuggingFaceEmbeddings] = None
 gemini_client = None
@@ -230,7 +235,7 @@ def split_by_dieu(docs: List[Document]) -> List[Document]:
     for doc in docs:
         content = doc.page_content.strip()
 
-        ontent = re.sub(r"[ \t]+", " ", content)
+        content = re.sub(r"[ \t]+", " ", content)
 
         parts = re.split(pattern, content)
 
@@ -261,7 +266,46 @@ def split_by_dieu(docs: List[Document]) -> List[Document]:
 
 
 def _split_docs(docs: List[Document]) -> List[Document]:
-    return split_by_dieu(docs)
+    all_chunks = []
+    FILES_CHIA_THEO_DIEU = [
+        "quychehocvu.pdf",
+    ]
+
+    for doc in docs:
+        source_path = doc.metadata.get("source", None)
+        file_name = Path(source_path).name.lower() if source_path else "unknown"
+
+        if file_name in FILES_CHIA_THEO_DIEU:
+            print(f">>> [split_docs] File '{file_name}' - CHIA THEO ĐIỀU")
+            dieu_docs = split_by_dieu([doc])
+            all_chunks.extend(dieu_docs)
+        else:
+            print(f">>> [split_docs] File '{file_name}' - CHIA CHUNK THƯỜNG")
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1500,
+                chunk_overlap=200,
+                separators=[
+                    "\n#### ",
+                    "\n### ",
+                    "\n## ",
+                    "\n# ",
+                    "\n---",
+                    "\n\n- ",
+                    "\n- ",
+                    "\n\n",
+                    "\n",
+                    ". ",
+                    " ",
+                    ""
+                ]
+            )
+            chunks = splitter.split_documents([doc])
+            for c in chunks:
+                c.metadata["source"] = doc.metadata.get("source")
+            all_chunks.extend(chunks)
+
+    return all_chunks
+
 
 
 def _index_documents(docs: List[Document]) -> None:
@@ -326,11 +370,33 @@ class AskRequest(BaseModel):
 
 @app.post("/ask")
 async def ask(req: AskRequest):
-    if req.k < 1 or req.k > 12:
-        raise HTTPException(status_code=400, detail="k phải trong [1..12]")
-    start_time = time.time() 
-    answer = await rag_answer(req.question, k=req.k)
-    elapsed = time.time() - start_time 
+    global CHAT_HISTORY
+
+    CHAT_HISTORY.append({"role": "user", "content": req.question})
+
+    CHAT_HISTORY = CHAT_HISTORY[-MAX_HISTORY:]
+
+    history_text = "\n".join(
+        f"{h['role'].upper()}: {h['content']}"
+        for h in CHAT_HISTORY
+    )
+
+    full_question = f"""
+        Lịch sử hội thoại gần đây:
+        {history_text}
+
+        Câu hỏi hiện tại: {req.question}
+
+        Hãy hiểu nghĩa câu hỏi dựa trên lịch sử hội thoại phía trên (nếu câu hỏi thiếu chủ ngữ).
+    """
+
+    start_time = time.time()
+    answer = await rag_answer(full_question, k=req.k)
+    elapsed = time.time() - start_time
+
+    CHAT_HISTORY.append({"role": "assistant", "content": answer})
+    CHAT_HISTORY = CHAT_HISTORY[-MAX_HISTORY:]
+
     hours = int(elapsed // 3600)
     minutes = int((elapsed % 3600) // 60)
     seconds = int(elapsed % 60)
@@ -341,6 +407,7 @@ async def ask(req: AskRequest):
         "elapsed_seconds": round(elapsed, 3),
         "elapsed_hms": formatted_time 
     })
+
 
 @app.post("/ingest")
 async def ingest(files: List[UploadFile] = File(...)):
