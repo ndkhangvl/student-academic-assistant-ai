@@ -14,3 +14,4 @@ python-multipart
 google-generativeai
 psutil
 langchain-google-genai==0.0.6
+docx2txt
