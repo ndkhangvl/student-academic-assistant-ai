@@ -51,7 +51,7 @@ MAX_HISTORY = 6
 
 # --------- Embeddings & LLM ----------
 embeddings: Optional[HuggingFaceEmbeddings] = None
-gemini_client = None
+gemini_model = None
 GEMINI_MODEL = "gemini-2.5-flash"
 
 # --------- Prompt -----------
@@ -60,7 +60,7 @@ Bạn là trợ lý học vụ. Chỉ trả lời bằng tiếng Việt.
 
 QUY TẮC:
 1. Chỉ dùng thông tin trong “Ngữ cảnh”. Không dùng kiến thức ngoài.
-2. Mọi số liệu hoặc kết luận phải kèm trích dẫn dạng [file:ĐiềuX].
+2. Mọi số liệu hoặc kết luận phải kèm trích dẫn dạng [Điều X].
 3. Nếu thiếu dữ liệu hoặc không gán được nguồn, trả: "Không đủ dữ liệu."
 4. Không suy diễn, không thêm nội dung.
 5. Câu trả lời phải NGẮN GỌN: tối đa 3 đến 5 câu, chỉ nêu ý chính liên quan trực tiếp câu hỏi. Không liệt kê dài, không giải thích thừa.
@@ -150,23 +150,21 @@ def _build_rag_chain(k: int = 8):
 
 # --------- Gemini call helper -----------
 def _call_gemini(context: str, question: str) -> str:
-    prompt = f"""
-    Bạn là trợ lý thông minh. Dưới đây là ngữ cảnh:
-    {context}
+
+    global SYSTEM_PROMPT
+    
+    formatted_rules_and_context = SYSTEM_PROMPT.format(context=context)
+
+    final_prompt = f"""
+    {formatted_rules_and_context}
 
     Câu hỏi: {question}
     """
-    
-    model = genai.GenerativeModel(
-        "gemini-2.5-flash",
-        generation_config={
-            "temperature": 0.2,
-            "top_p": 0.9,
-            "max_output_tokens": 4096
-        }
-    ) 
 
-    response = model.generate_content(prompt)
+    if gemini_model is None:
+        print("Gemini chưa được khởi tạo")
+
+    response = gemini_model.generate_content(final_prompt)
     # if not response.text:
     #     if response.prompt_feedback.block_reason != 0: 
     #         print(f"LỖI PHẢN HỒI BỊ CHẶN: Lý do chặn: {response.prompt_feedback.block_reason.name}")
@@ -321,10 +319,29 @@ def print_ram(label=""):
     process = psutil.Process(os.getpid())
     mem_mb = process.memory_info().rss / (1024 * 1024)
     print(f"[RAM] {label}: {mem_mb:.2f} MB")
+
+def is_follow_up(prev_q: str, new_q: str) -> bool:
+    if not prev_q or not new_q:
+        return False
+    FOLLOWUP_WORDS = [
+        "vậy", "vậy thì", "thế", "thế thì", "thế còn", "và", "rồi sao", "tiếp theo", "tiếp tục", "nữa",
+        "nó", "đó", "đấy", "kia", "cái đó", "cái này", "cái kia",
+        "sao nữa", "sao rồi", "thì sao", "còn", "còn cái đó", "còn cái kia",
+        "vay", "the", "con", "no", "do"
+    ]
+    new_q_lower = new_q.lower().strip()
+    if any(word in new_q_lower for word in FOLLOWUP_WORDS):
+        return True
+    if len(new_q_lower.split()) <= 5:
+        return True
+    if new_q_lower.endswith(("sao", "vậy", "hả", "à", "nhỉ")):
+        return True
+    return False
+
 # --------- FastAPI endpoints ----------
 @app.on_event("startup")
 def _startup():
-    global embeddings, vectorstore
+    global embeddings, vectorstore, gemini_model
 
     print_ram("Before loading embeddings")
 
@@ -341,6 +358,14 @@ def _startup():
         raise RuntimeError("Chưa thiết lập GOOGLE_API_KEY")
 
     genai.configure(api_key=api_key)
+    gemini_model = genai.GenerativeModel(
+        GEMINI_MODEL,
+        generation_config={
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "max_output_tokens": 4096
+        }
+    )
 
     print_ram("Before loading FAISS")
 
@@ -371,6 +396,11 @@ class AskRequest(BaseModel):
 @app.post("/ask")
 async def ask(req: AskRequest):
     global CHAT_HISTORY
+
+    if CHAT_HISTORY:
+        last_question = CHAT_HISTORY[-1]["content"]
+        if not is_follow_up(last_question, req.question):
+            CHAT_HISTORY.clear()
 
     CHAT_HISTORY.append({"role": "user", "content": req.question})
 
