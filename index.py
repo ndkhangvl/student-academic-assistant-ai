@@ -28,6 +28,7 @@ import re
 import google.generativeai as genai
 from pathlib import Path
 from typing import List, Optional, Tuple
+import asyncio
 
 app = FastAPI(title="RAG + Gemini (Accuracy‑Maximized)", version="1.0.0")
 app.add_middleware(
@@ -53,6 +54,12 @@ MAX_HISTORY = 6
 embeddings: Optional[HuggingFaceEmbeddings] = None
 gemini_model = None
 GEMINI_MODEL = "gemini-2.5-flash"
+
+# Key 
+API_KEYS = []
+CUR_KEY_INDEX = 0
+QUESTION_COUNT = 0
+KEY_LOCK = asyncio.Lock()
 
 # --------- Prompt -----------
 SYSTEM_PROMPT = """
@@ -171,6 +178,7 @@ def _call_gemini(context: str, question: str) -> str:
 
     if gemini_model is None:
         print("Gemini chưa được khởi tạo")
+    asyncio.run(rotate_key_if_needed())
 
     response = gemini_model.generate_content(final_prompt)
     # if not response.text:
@@ -349,7 +357,7 @@ def is_follow_up(prev_q: str, new_q: str) -> bool:
 # --------- FastAPI endpoints ----------
 @app.on_event("startup")
 def _startup():
-    global embeddings, vectorstore, gemini_model
+    global embeddings, vectorstore, gemini_model, API_KEYS
 
     print_ram("Before loading embeddings")
 
@@ -361,11 +369,16 @@ def _startup():
 
     print_ram("After loading embeddings")
 
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
+    # api_key = os.getenv("GOOGLE_API_KEY")
+    keys = os.getenv("GOOGLE_API_KEY", "")
+    # if not api_key:
+    #     raise RuntimeError("Chưa thiết lập GOOGLE_API_KEY")
+    API_KEYS = [k.strip() for k in keys.split(",") if k.strip()]
+    if not API_KEYS:
         raise RuntimeError("Chưa thiết lập GOOGLE_API_KEY")
 
-    genai.configure(api_key=api_key)
+    # genai.configure(api_key=api_key)
+    genai.configure(api_key=API_KEYS[0])
     gemini_model = genai.GenerativeModel(
         GEMINI_MODEL,
         generation_config={
@@ -386,6 +399,28 @@ def _startup():
 
     print_ram("After loading FAISS")
 
+async def rotate_key_if_needed():
+    global QUESTION_COUNT, CUR_KEY_INDEX, gemini_model
+
+    async with KEY_LOCK:
+        QUESTION_COUNT += 1
+
+        if QUESTION_COUNT % 5 != 0:
+            return
+
+        CUR_KEY_INDEX = (CUR_KEY_INDEX + 1) % len(API_KEYS)
+        new_key = API_KEYS[CUR_KEY_INDEX]
+
+        genai.configure(api_key=new_key)
+        gemini_model = genai.GenerativeModel(
+            GEMINI_MODEL,
+            generation_config={
+                "temperature": 0.2,
+                "top_p": 0.8,
+                "max_output_tokens": 4096
+            }
+        )
+        print(f"[KEY] Sử dụng key: {new_key[:10]}***")
 
 @app.get("/health")
 def health():
