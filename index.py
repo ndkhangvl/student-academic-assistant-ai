@@ -120,6 +120,7 @@ def hash_ctx(question: str, context: str, model: str, k: int) -> str:
     h.update(f"|{model}|{k}".encode("utf-8"))
     return h.hexdigest()
 
+# Xử lý thành context đưa vào câu prompt
 def _format_docs(docs: List[Document], per_chunk_limit: int = 2000, k_limit: int = 8) -> str:
     formatted_chunks = []
     
@@ -199,7 +200,7 @@ ANSWER_CACHE = TTLCache(maxsize=50, ttl=600)
 async def rag_answer(question: str, k: int = 8) -> str:
     qn = norm_text(question)
     ctx_text = CONTEXT_CACHE.get((qn, k))
-
+    # Sử dụng kNN để tìm các dữ liệu liên quan k = 8
     if ctx_text is None:
         start_time_faiss = time.time()
         retriever = _make_retriever(k)
@@ -321,7 +322,7 @@ def _split_docs(docs: List[Document]) -> List[Document]:
     return all_chunks
 
 
-
+# Tạo lưu trữ các vector cho các chunk văn bản
 def _index_documents(docs: List[Document]) -> None:
     global vectorstore
     chunks = _split_docs(docs)
